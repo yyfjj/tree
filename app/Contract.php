@@ -122,7 +122,7 @@ class Contract extends Model
     function review_logs(){
         $str = join('","',array_values(\Config::get('constants.REVIEW')));
         return $this->hasMany(ReviewLog::class,'foreign_key','id')
-                    ->where('model','contract')
+                    ->where('model','contracts')
                     ->orderByRaw(" field(name,\"{$str}\") asc , updated_at asc");
     }
 
