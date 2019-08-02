@@ -422,6 +422,12 @@ class ContractController extends Controller
      * @param Request $request
      */
     public function store_1(Request $request,Contract $contract){
+        if($contract->process0_status != 1){
+            throw new \Exception('合同草拟提交后方可商务会签操作');
+        }
+
+        if($contract->process1_status == 1)
+
         $contract->sn = $request->input('sn');
         $contract->begin_time = $request->input('begin_time');
         $contract->end_time   = $request->input('end_time');
@@ -467,16 +473,24 @@ class ContractController extends Controller
     }
     /**
      * 详情02203
-     * @queryParam contract required 合同自增id
+     * @urlParam contract required 合同自增id
      * @response{
+     *  "time_line":{
+     *      "font":[
+     *          "合同草拟","商务会签","业务会签","领导审批","合同归档"
+     *      ],
+     *      "time":[
+     *          "2019-08-02 10:03:03",null,null,null,"null表示未到该步骤"
+     *      ]
+     * },
      *  "id":"合同自增id",
      *  "name":"合同名称",
      *  "sn_alias":"对方合同编号",
      *  "type":"合同类型customer:客户合同,supplier:供应商合同",
      *  "attachment":"合同附件",
-     *  "customer_supplier":[
+     *  "customer_suppliers":[
      *      {
-     *          "customer_supplier_id":"客户/供应商id",
+     *          "id":"客户/供应商id",
      *          "is_invoice":"是否结算单位0:否,1:是"
      *      }
      *  ],
@@ -492,6 +506,14 @@ class ContractController extends Controller
      *  "credit_delay_data_data":"延后月份结算日:当是次月、次次月、次次次月才有具体数据天",
      *  "process1_user_name":"商务会签操作人",
      *  "process1_time":"商务会签操作时间",
+     *  "contract_data":[
+     *      {
+     *          "segment_business_id":"业务板块id",
+     *          "master_business_id":"主业务类型id",
+     *          "slaver_business_id":"子业务类型id",
+     *          "charge_rule_id":"价格协议id"
+     *      }
+     * ]
      *  "review_logs":[{
      *      "process_name":"步骤名称",
      *      "depart_name":"部门名称",
@@ -501,53 +523,6 @@ class ContractController extends Controller
      *      "process_suggestion":"办理意见",
      *      "process_time":"办理时间"
      * }]
-     *  "contract_data":[
-     *      "segment_business_id":"业务板块id",
-     *      "master_business_id":"主业务类型id",
-     *      "slaver_business_id":"子业务类型id",
-     *      "charge_rule_id":"价格协议号id"
-     *  ]
-     *  "type":[{
-     *      "key":"合同类型下拉选择框的key",
-     *      "item":"合同类型下拉选择框的value",
-     *      "is_selected":"合同类型下拉选择框是否被选中0:未选中,1:选中"
-     * }],
-     *  "clear_companies":[{
-     *      "key":"结算公司下拉选择框的key",
-     *      "item":"结算公司下拉选择框的value",
-     *      "is_selected":"结算公司下拉选择框是否被选中0:未选中,1:选中"
-     * }],
-     *  "part_a_customer_suppliers":[{
-     *      "key":"甲方下拉选择框的key",
-     *      "item":"甲方下拉选择框的value",
-     *      "is_selected":"甲方下拉选择框是否被选中0:未选中,1:选中"
-     * }],
-     *  "part_b_customer_suppliers":[{
-     *      "key":"乙方下拉选择框的key",
-     *      "item":"乙方下拉选择框的value",
-     *      "is_selected":"乙方下拉选择框是否被选中0:未选中,1:选中"
-     * }],
-     *  "part_c_customer_suppliers":[{
-     *      "key":"丙方下拉选择框的key",
-     *      "item":"丙方下拉选择框的value",
-     *      "is_selected":"丙方下拉选择框是否被选中0:未选中,1:选中"
-     * }],
-     *  "from":[{
-     *      "key":"揽货性质下拉选择框的key",
-     *      "item":"揽货性质下拉选择框的value",
-     *      "is_selected":"揽货性质下拉选择框是否被选中0:未选中,1:选中"
-     * }],
-     *  "contract_data":[{
-     *      "segment_businesses_id":"业务板块id",
-     *      "segment_businesses_name":"业务板块名称",
-     *      "master_businesses_id":"主业务id",
-     *      "master_businesses_name":"主业务名称",
-     *      "slaver_businesses_id":"子业务id",
-     *      "slaver_businesses_name":"子业务名称",
-     *      "charge_rules_id":"价格协议号id",
-     *      "charge_rules_name":"价格协议号名称"
-     * }],
-     *  "attachment":"合同附件"
      * }
      * @param Contract $contract
      * @return array
@@ -557,12 +532,80 @@ class ContractController extends Controller
         $contract = Contract::query()->with(['contract_data'=>function($q){
             /** @type \Illuminate\Database\Eloquent\Builder $q */
             $q->with(['segment_businesses','master_businesses','slaver_businesses'/*,'charge_rules'*/]);
-        },'part_a_customer_suppliers','part_b_customer_suppliers','part_c_customer_suppliers',
+        },'contract_customer_suppliers',
             'review_logs'=>function($q){
                 /** @type \Illuminate\Database\Eloquent\Builder $q */
                 $q->with(['users','roles']);
             }])
                                     ->where('id',$contract->id)->first();
+        $return = function($contract){
+            /** @var Contract $contract */
+            $return = [];
+            $return['time_line'] = [
+                'font'=>array_values(Config::get('constants.REVIEW')),
+                'time'=>[$contract->process0_time,$contract->process1_time,$contract->process2_time,$contract->process3_time,$contract->process4_time]
+            ];
+            $return['id'] = $contract->id;
+            $return['name'] = $contract->name;
+            $return['sn_alias'] = $contract->sn_alias;
+            $return['type'] = $contract->type;
+            $return['attachment'] = $contract->attachment;
+            $return['customer_suppliers'] = collect($contract->contract_customer_suppliers)->map(function ($item,$key){
+                /** @var CustomerSupplier $item */
+                return ['id'=>$item->id,'is_invoice'=>$item->is_invoice];
+            });
+            $return['clear_company_id'] = $contract->clear_company_id;
+            $return['process0_user_name'] = User::find($contract->process0_user_id)->getAttributeValue('name');
+            $return['process0_time'] = $contract->process0_time;
+            $return['sn'] = $contract->sn;
+            $return['begin_time'] = $contract->begin_time;
+            $return['end_time'] = $contract->end_time;
+            $return['credit_delay_type'] = $contract->credit_delay_type;
+            $return['credit_time_type']  = $contract->credit_time_type;
+            $return['credit_delay_data'] = $contract->credit_delay_data;
+            $return['credit_delay_data_data'] = $contract->credit_delay_data_data;
+            $return['process1_user_name'] = User::find($contract->process1_user_id)->getAttributeValue('name');
+            $return['process1_time'] = $contract->process1_time;
+            $return['contract_data'] = collect($contract->contract_data)->map(function ($item,$key){
+                $data = [];
+                /** @var ContractData $item */
+                $data['segment_business_id'] = $item->segment_business_id;
+                $data['master_business_id'] = $item->master_business_id;
+                $data['slaver_business_id'] = $item->slaver_business_id;
+                $data['slaver_business_id'] = $item->slaver_business_id;
+                $data['charge_rule_id'] = $item->charge_rule_id;
+                return $data;
+            });
+            $return['review_logs'] = collect($contract->review_logs)->map(function($item){
+                /** @var ReviewLog $item */
+                $data = [];
+//            $data['name'] = data_get($item,"name");
+                $data['process_users_name'] = data_get($item,"users.name");
+                $data['depart_name'] = data_get($item,"roles.name");
+//            $data['roles_name'] = data_get($item,"roles.name");
+                $data['process_name'] = Config::get("constants.REVIEW")[data_get($item,'roles.id')];
+                $data['process_status'] = data_get($item,"status") == 0 ? "未办理" : "已办理";
+                if(data_get($item,"status") == -1){
+                    $data['process_result'] = "退回";
+                }elseif(data_get($item,'status') == 0){
+                    $data['process_result'] = '未办理';
+                }else{
+                    $process_location = $this->_process_location(data_get($item, 'role_id'));
+                    if($process_location == 0){
+                        $data['process_result'] = "提交";
+                    }elseif ($process_location == 4){
+                        $data['process_result'] = '归档';
+                    }else{
+                        $data['process_result'] = '同意';
+                    }
+                }
+                $data['process_suggestion'] = data_get($item,"suggestion");
+                $data['process_time']       = (string)data_get($item,"updated_at");
+                return $data;
+            });
+            return $return;
+        };
+        return $return($contract);
         $return = function($contract){
             /** @var Contract $contract */
             $return = [];
@@ -820,7 +863,7 @@ class ContractController extends Controller
 
     /**
      * 删除02205
-     * @queryParam contract required 合同id
+     * @urlParam contract required 合同id
      * @response {
      * }
      * @param Contract $contract
@@ -828,13 +871,16 @@ class ContractController extends Controller
      */
     public function destroy(Contract $contract)
     {
+        if($contract->process0_status != 0){
+            throw new \Exception("审批中的合同，无法删除！");
+        }
         /** @noinspection PhpUndefinedClassInspection */
         DB::transaction(function () use($contract){
             Contract::destroy($contract->id);
-            ContractData::query()->where("contracts_id",$contract->id)->delete();
+//            ContractData::query()->where("contracts_id",$contract->id)->delete();
             RoleReview::query()->where("model","contract")->where('foreign_key',$contract->id)->delete();
         });
-        //fixme-benjamin 回滚删除上传文件
+        Storage::disk('public')->delete($contract->attachment);
 
         return [];
     }
