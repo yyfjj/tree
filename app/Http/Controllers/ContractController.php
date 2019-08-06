@@ -10,6 +10,7 @@ use App\CustomerSupplier;
 use App\CustomerSupplierBusinessData;
 use App\ReviewLog;
 use App\RoleReview;
+use App\Service\ContractService;
 use App\User;
 use Illuminate\Http\Request;
 use /** @noinspection PhpUndefinedClassInspection */
@@ -18,12 +19,19 @@ use /** @noinspection PhpUndefinedClassInspection */
     Illuminate\Support\Facades\DB;
 use /** @noinspection PhpUndefinedClassInspection */
     Illuminate\Support\Facades\Storage;
+use Mockery\Exception;
 
 /**
  * @group 合同审批管理022
  */
 class ContractController extends Controller
 {
+    private $_contractService;
+    function __construct(ContractService $contractService)
+    {
+        $this->_contractService = $contractService;
+    }
+
     /**
      * 列表02201
      *
@@ -53,19 +61,32 @@ class ContractController extends Controller
      * @response {
      * "data":[{
      *  "id": 4,
-     *  "result": "办理结果-1-退签，0-草稿(使用--表示)，1-同意、",
-     *  "status": "办理状态0-未办理，1-已办理",
+     *  "process":"合同草拟",
+     *  "status":"办理状态"，
+     *  "result": "办理结果",
+     *  "type": "合同类型",
      *  "sn": "合同编号",
-     *  "inner_sn": "合同序号",
-     *  "part_a_customer_suppliers": "甲方",
-     *  "part_b_customer_suppliers": "乙方",
-     *  "part_c_customer_suppliers": "丙方",
+     *  "sn_inner": "合同序号",
+     *  "clear_company_name": "结算公司",
+     *  "part_b_customer_suppliers": "客户",
+     *  "part_c_customer_suppliers": "供应商",
      *  "segment_businesses": "业务板块",
      *  "master_businesses": "主业务类型",
      *  "slaver_businesses": "子业务类型",
-     *  "status":"0-禁止1-启用",
-     *  "created_at": "生成时间",
-     *  "updated_at": "修改时间"
+     *  "slaver_businesses": "价格协议",
+     *  "status":"合同生效日",
+     *  "created_at": "合同失效日",
+     *  "updated_at": "合同状态",
+     *  "process0_user_name": "申请人",
+     *  "process0_time": "申请时间",
+     *  "process1_user_name": "商务会签人",
+     *  "process1_time": "商务会签时间",
+     *  "process2_user_name": "业务会签人",
+     *  "process2_time": "业务会签时间",
+     *  "process3_user_name": "审批人",
+     *  "process3_time": "审批时间",
+     *  "process4_user_name": "归档人",
+     *  "process4_time": "归档时间",
      * }],
      *  "current_page": 1,
      *  "first_page_url": "http://host/api/v1/contracts?page=1",
@@ -85,255 +106,253 @@ class ContractController extends Controller
      * @param Request $request
      * @return \Illuminate\Http\Resources\Json\AnonymousResourceCollection|\Illuminate\Pagination\AbstractPaginator|mixed
      */
-    public function index(Request $request)
+    public function index(Request $request/*,ContractService $contractService*/)
     {
+//        return $this->_contractService->get_info();
+        $contract = Contract::query()->with([
+            'clear_companies',
+            'contract_data'=>function($q){
+                /** @type \Illuminate\Database\Eloquent\Builder $q */
+                $q->with(['segment_businesses','master_businesses','slaver_businesses']);
+            },
+            'process0_user',
+            'process1_user',
+            'process2_user',
+            'process3_user',
+            'process4_user',
+            'contract_customer_suppliers',
+            'contract_customer_suppliers_hasMany']);
         //fixme-benjamin
         /** @var \Illuminate\Pagination\AbstractPaginator $list */
         /** @noinspection PhpParamsInspection */
-        $list = Contract::query()->when($request->has('status'),function ($q)use($request){
+        $contract = $contract->when($request->has('status'),function ($q)use($request){
             /** @type \Illuminate\Database\Eloquent\Builder $q */
             $process_status = 'process'.$this->_process_location($request->get('role_id'))."_status";
             if($request->input('status') === '0'){
-                $q->whereIn($process_status,[null,0]);
+//                $q->whereIn($process_status,[null,0]);
+                $q->where($process_status,0);
             }elseif ($request->input('status') === '1'){
                 $q->whereIn($process_status,[-1,1]);
             }else{
                 throw new \Exception('status参数异常');
             }
-        })
-            ->when($request->has('clear_company_id'),function ($q)use($request){
+        });
+        //<editor-fold desc="办理结果、办理状态、办理步骤">
+        $contract = $contract->when($request->has('process') && $request->input('process') !== '',
+            function ($q)use($request){
+                /** @type \Illuminate\Database\Eloquent\Builder $q */
+                $q->whereIn('process'.$request->input('process').'_status',[1,-1])
+                    ->when($request->has('status') && $request->input('status') != '',function ($q)use($request) {
+                        /** @type \Illuminate\Database\Eloquent\Builder $q */
+                        $process_status = 'process' . $request->input('process') . "_status";
+                        if ($request->input('status') === '0') {
+//                $q->whereIn($process_status,[null,0]);
+                            $q->where($process_status, 0);
+                        } elseif ($request->input('status') === '1') {
+                            $q->whereIn($process_status, [-1, 1]);
+                        } else {
+                            throw new \Exception('status参数异常');
+                        }
+                    })->when($request->has('result') && $request->input('result') ,function ($q)use($request){
+                        /** @type \Illuminate\Database\Eloquent\Builder $q */
+                        $process_status = 'process' . $request->input('process') . "_status";
+                        $q->where($process_status,$request->input('result'));
+                    });
+            },
+            function($q)use($request){
+                /** @type \Illuminate\Database\Eloquent\Builder $q */
+                $q ->when($request->has('status') && $request->input('status') != '',function ($q)use($request) {
+                    /** @type \Illuminate\Database\Eloquent\Builder $q */
+                    if($request->input('status') === '0'){
+                        $q->whereRaw("process0_status = 0 or process1_status=0 or process2_status=0 or process3_status=0 or process4_status=0");
+                    }elseif ($request->input('status') === '1'){
+                        $q->whereRaw("process0_status in (1,-1) or process1_status in(1,-1) or process2_status in(1,-1) or process3_status in(1,-1) or process4_status in(1,-1)");
+                    }else{
+                        throw new Exception("status参数异常");
+                    }
+                })->when($request->has('status') && $request->input('status') != '' ,function ($q)use($request){
+                    /** @type \Illuminate\Database\Eloquent\Builder $q */
+                    $input = $request->input('status');
+                    $q->whereRaw("process0_status={$input} or process1_status={$input} or process2_status={$input} or process3_status={$input} or process4_status={$input}");
+                });
+            });
+        //</editor-fold>
+        //<editor-fold desc="结算公司">
+        $contract = $contract->when($request->has('clear_company_id'),function ($q)use($request){
             /** @type \Illuminate\Database\Eloquent\Builder $q */
             $q->where('clear_company_id',$request->input('clear_company_id'));
-        })->when($request->has('result'),function ($q)use($request){
-            //办理结果 -1退签1同意
-            /** @type \Illuminate\Database\Eloquent\Builder $q */
-            $process_status = 'process'.$this->_process_location($request->get('role_id'))."_status";
-            $q->where($process_status,$request->input('result'));
-        })->when($request->has('process0_begin_time'),function ($q)use($request){
-            //申请开始时间
-            /** @type \Illuminate\Database\Eloquent\Builder $q */
-            $q->where('process0_time','>=',$request->input('process0_begin_time'));
-        })->when($request->has('process0_end_time'),function ($q)use($request){
-            //申请结束时间
-            /** @type \Illuminate\Database\Eloquent\Builder $q */
-            $q->where('process0_time','<=',$request->input('process0_end_time'));
-        })->when($request->has('process1_user_id'),function ($q)use($request){
-            //申请人
-            /** @type \Illuminate\Database\Eloquent\Builder $q */
-            $q->where('process0_user_id',$request->input('process0_user_id'));
-        })->when($request->has('process1_begin_time'),function ($q)use($request){
-            //商务会签开始时间
-            /** @type \Illuminate\Database\Eloquent\Builder $q */
-            $q->where('process1_time','>=',$request->input('process1_begin_time'));
-        })->when($request->has('process1_end_time'),function ($q)use($request){
-            //商务会签结束时间
-            /** @type \Illuminate\Database\Eloquent\Builder $q */
-            $q->where('process1_time','<=',$request->input('process1_end_time'));
-        })->when($request->has('process1_user_id'),function ($q)use($request){
-            //商务会签人
-            /** @type \Illuminate\Database\Eloquent\Builder $q */
-            $q->where('process1_user_id',$request->input('process1_user_id'));
-        })->when($request->has('process2_begin_time'),function ($q)use($request){
-            //业务会签开始时间
-            /** @type \Illuminate\Database\Eloquent\Builder $q */
-            $q->where('process2_time','>=',$request->input('process2_begin_time'));
-        })->when($request->has('process2_end_time'),function ($q)use($request){
-            //业务会签结束时间
-            /** @type \Illuminate\Database\Eloquent\Builder $q */
-            $q->where('process2_time','<=',$request->input('process2_end_time'));
-        })->when($request->has('process2_user_id'),function ($q)use($request){
-            //业务会签人
-            /** @type \Illuminate\Database\Eloquent\Builder $q */
-            $q->where('process2_user_id',$request->input('process2_user_id'));
-        })->when($request->has('process3_begin_time'),function ($q)use($request){
-            //审批人开始时间
-            /** @type \Illuminate\Database\Eloquent\Builder $q */
-            $q->where('process3_time','>=',$request->input('process3_begin_time'));
-        })->when($request->has('process3_end_time'),function ($q)use($request){
-            //审批人结束时间
-            /** @type \Illuminate\Database\Eloquent\Builder $q */
-            $q->where('process3_time','<=',$request->input('process3_end_time'));
-        })->when($request->has('process3_user_id'),function ($q)use($request){
-            //审批人
-            /** @type \Illuminate\Database\Eloquent\Builder $q */
-            $q->where('process3_user_id',$request->input('process3_user_id'));
-        })->when($request->has('process4_begin_time'),function ($q)use($request){
-            //归档人开始时间
-            /** @type \Illuminate\Database\Eloquent\Builder $q */
-            $q->where('process4_time','>=',$request->input('process4_begin_time'));
-        })->when($request->has('process4_end_time'),function ($q)use($request){
-            //归档人结束时间
-            /** @type \Illuminate\Database\Eloquent\Builder $q */
-            $q->where('process4_time','<=',$request->input('process4_end_time'));
-        })->when($request->has('process4_user_id'),function ($q)use($request){
-            //归档人
-            /** @type \Illuminate\Database\Eloquent\Builder $q */
-            $q->where('process4_user_id',$request->input('process4_user_id'));
-        })->with([
-            'part_a_customer_suppliers',
-            'part_b_customer_suppliers',
-            'part_c_customer_suppliers',
-            'contract_data'=>function($q)use($request){
-            /** @type \Illuminate\Database\Eloquent\Builder $q */
-            $q->with(['segment_businesses'=>function($q)use($request){
+        });
+        //</editor-fold>
+        //<editor-fold desc="客户、供应商、合同类型">
+        $contract = $contract->when($request->has('type') && $request->has('type'),
+            function ($q)use($request){
                 /** @type \Illuminate\Database\Eloquent\Builder $q */
-                $q->when($request->has('segment_business_id'),function ($q)use($request){
+                $q->where('type',$request->input('type'))
+                    ->when($request->has('customer_supplier_id') && $request->input('customer_supplier_id'),function ($q)use($request){
                     /** @type \Illuminate\Database\Eloquent\Builder $q */
-                    $q->where('segment_business_id',$request->input('segment_business_id'));
+//                    $q->whereRaw("find_in_set({$request->input('customer_id_supplier')},customer_supplier_id_string)");
+                        $q->whereHas('contract_customer_suppliers_hasMany',function ($q)use($request){
+                            /** @type \Illuminate\Database\Eloquent\Builder $q */
+                            $q->where('customer_supplier_id',$request->input('customer_supplier_id'));
+                        });
                 });
-            },'master_businesses'=>function($q)use($request){
+            });
+        //</editor-fold>
+        //<editor-fold desc="合同编号">
+        $contract = $contract->when($request->has('sn') && $request->input('sn'),function ($q)use($request){
+            /** @type \Illuminate\Database\Eloquent\Builder $q */
+            $q->where('sn',$request->input('sn'));
+        });
+        //</editor-fold>
+        //<editor-fold desc="价格协议号">
+        $contract = $contract->when($request->has('charge_rule_id') && $request->input('charge_rule_id'),function ($q)use($request){
+            /** @type \Illuminate\Database\Eloquent\Builder $q */
+            $q->whereHas('contract_data',function ($q)use($request){
                 /** @type \Illuminate\Database\Eloquent\Builder $q */
-                $q->when($request->has('master_business_id'),function ($q)use($request){
-                    /** @type \Illuminate\Database\Eloquent\Builder $q */
-                    $q->where('master_business_id',$request->input('master_business_id'));
-                });
-            },'slaver_businesses'=>function($q)use($request){
+                $q->where('charge_rule_id',$request->input('charge_rule_id'));
+            });
+        });
+        //</editor-fold>
+        //<editor-fold desc="业务板块">
+        $contract = $contract->when($request->has('segment_business_id') && $request->input('segment_business_id'),function ($q)use($request){
+            /** @type \Illuminate\Database\Eloquent\Builder $q */
+            $q->whereHas('contract_data',function ($q)use($request){
                 /** @type \Illuminate\Database\Eloquent\Builder $q */
-                $q->when($request->has('slaver_business_id'),function ($q)use($request){
-                    /** @type \Illuminate\Database\Eloquent\Builder $q */
-                    $q->where('slaver_business_id',$request->input('slaver_business_id'));
-                });
-            }]);
-        }])->leftJoin('customer_suppliers as part_a_customer_suppliers','contracts.part_a_customer_supplier_id','=','part_a_customer_suppliers.id')
-            ->leftJoin('customer_suppliers as part_b_customer_suppliers','contracts.part_b_customer_supplier_id','=','part_b_customer_suppliers.id')
-            ->leftJoin('customer_suppliers as part_c_customer_suppliers','contracts.part_c_customer_supplier_id','=','part_c_customer_suppliers.id')
-            ->when($request->has('search'),function ($q)use($request){
+                $q->where('segment_business_id',$request->input('segment_business_id'));
+            });
+        });
+        //</editor-fold>
+        //<editor-fold desc="主业务板块">
+        $contract = $contract->when($request->has('master_business_id') && $request->input('master_business_id'),function ($q)use($request){
+            /** @type \Illuminate\Database\Eloquent\Builder $q */
+            $q->whereHas('contract_data',function ($q)use($request){
                 /** @type \Illuminate\Database\Eloquent\Builder $q */
-                $q->where('part_a_customer_suppliers.name','like',"%".$request->input('search')."%")
-                  ->orWhere('part_c_customer_suppliers.name','like',"%".$request->input('search')."%")
-                  ->orWhere('part_b_customer_suppliers.name','like',"%".$request->input('search')."%");
-            })
-            ->orderBy("contracts.updated_at","desc")->paginate($request->get('per_page',10));;
-//            return $list;
-//        $list = Contract::query()->with([
-////                                            'part_a_customer_suppliers',
-////                                            'part_b_customer_suppliers',
-////                                            'part_c_customer_suppliers',
-//                                            'role_reviews'=>function($q)use($request){
-//                                                    /** @type \Illuminate\Database\Eloquent\Builder $q */
-//                                                    $q->with(['users'])
-//                                                        ->where('model','contract')
-//                                                        ->where('role_id',$request->get('role_id'))
-//                                                        ->orderBy("id","desc")
-//                                                        ->when($request->has('status'),function ($q)use($request){
-//                                                            /** @type \Illuminate\Database\Eloquent\Builder $q */
-//                                                            if($request->input('status') === '0'){
-//                                                                $q->whereIn('status',[null,0]);
-//                                                            }elseif ($request->input('status') === '1'){
-//                                                                $q->where('status',1);
-//                                                            }else{
-//                                                                throw new \Exception('status参数异常');
-//                                                            }
-//                                                        })->when($request->has('result'),function ($q)use($request){
-//                                                            //办理结果 -1退签1同意
-//                                                            /** @type \Illuminate\Database\Eloquent\Builder $q */
-//                                                            $q->where('status',$request->input('result'));
-//                                                        })->when($request->has('process1_begin_time'),function ($q)use($request){
-//                                                            //申请开始时间
-//                                                            /** @type \Illuminate\Database\Eloquent\Builder $q */
-//                                                            /** @noinspection PhpUndefinedClassInspection */
-//                                                            $q->whereNotNull('status')
-//                                                                ->where('role_id',array_keys(Config::get('constants.REVIEW'))[0])
-//                                                                ->where('updated_at','>=',$request->input('process1_begin_time'));
-//                                                        })->when($request->has('process1_end_time'),function ($q)use($request){
-//                                                            //申请结束时间
-//                                                            /** @type \Illuminate\Database\Eloquent\Builder $q */
-//                                                            /** @noinspection PhpUndefinedClassInspection */
-//                                                            $q->whereNotNull('status')
-//                                                                ->where('role_id',array_keys(Config::get('constants.REVIEW'))[0])
-//                                                                ->where('updated_at','<=',$request->input('process1_end_time'));
-//                                                        })->when($request->has('process1_user_id'),function ($q)use($request){
-//                                                            //申请人
-//                                                            /** @type \Illuminate\Database\Eloquent\Builder $q */
-//                                                            /** @noinspection PhpUndefinedClassInspection */
-//                                                            $q->where('role_id',array_keys(Config::get('constants.REVIEW'))[0])
-//                                                                ->where('user_id',$request->input('process1_user_id'));
-//                                                        })->when($request->has('process2_begin_time'),function ($q)use($request){
-//                                                            //商务会签开始时间
-//                                                            /** @type \Illuminate\Database\Eloquent\Builder $q */
-//                                                            /** @noinspection PhpUndefinedClassInspection */
-//                                                            $q->whereNotNull('status')
-//                                                                ->where('role_id',array_keys(Config::get('constants.REVIEW'))[1])
-//                                                                ->where('updated_at','>=',$request->input('process2_begin_time'));
-//                                                        })->when($request->has('process2_end_time'),function ($q)use($request){
-//                                                            //商务会签结束时间
-//                                                            /** @type \Illuminate\Database\Eloquent\Builder $q */
-//                                                            /** @noinspection PhpUndefinedClassInspection */
-//                                                            $q->whereNotNull('status')
-//                                                                ->where('role_id',array_keys(Config::get('constants.REVIEW'))[1])
-//                                                                ->where('updated_at','<=',$request->input('process2_end_time'));
-//                                                        })->when($request->has('process2_user_id'),function ($q)use($request){
-//                                                            //商务会签人
-//                                                            /** @type \Illuminate\Database\Eloquent\Builder $q */
-//                                                            /** @noinspection PhpUndefinedClassInspection */
-//                                                            $q->where('role_id',array_keys(Config::get('constants.REVIEW'))[1])
-//                                                                ->where('user_id',$request->input('process2_user_id'));
-//                                                        });
-//                                            },
-//                                            'contract_data'=>function($q)use($request){
-//                                                /** @type \Illuminate\Database\Eloquent\Builder $q */
-//                                                $q->with(['segment_businesses'=>function($q)use($request){
-//                                                    /** @type \Illuminate\Database\Eloquent\Builder $q */
-//                                                    $q->when($request->has('segment_business_id'),function ($q)use($request){
-//                                                        /** @type \Illuminate\Database\Eloquent\Builder $q */
-//                                                        $q->where('segment_business_id',$request->input('segment_business_id'));
-//                                                    });
-//                                                },'master_businesses'=>function($q)use($request){
-//                                                    /** @type \Illuminate\Database\Eloquent\Builder $q */
-//                                                    $q->when($request->has('master_business_id'),function ($q)use($request){
-//                                                        /** @type \Illuminate\Database\Eloquent\Builder $q */
-//                                                        $q->where('master_business_id',$request->input('master_business_id'));
-//                                                    });
-//                                                },'slaver_businesses'=>function($q)use($request){
-//                                                    /** @type \Illuminate\Database\Eloquent\Builder $q */
-//                                                    $q->when($request->has('slaver_business_id'),function ($q)use($request){
-//                                                        /** @type \Illuminate\Database\Eloquent\Builder $q */
-//                                                        $q->where('slaver_business_id',$request->input('slaver_business_id'));
-//                                                    });
-//                                                }]);
-//                                            }
-//            ])
-//            ->when($request->has('clear_company_id'),function ($q)use($request){
-//                /** @type \Illuminate\Database\Eloquent\Builder $q */
-//                $q->when('clear_company_id',$request->input('clear_company_id'));
-//            })
-//            ->orderBy("updated_at","desc")->paginate($request->get('per_page',10));
-//        return $list;
-//        $anonymousResourceCollection = \App\Http\Resources\Contract::collection($list);
-//        return $anonymousResourceCollection;
-        /** @var \Illuminate\Pagination\AbstractPaginator $list */
-        $collection = $list->setCollection($list->getCollection()->map(function ($list)use($request){
-            //fixme-benjamin 一个人多个权限角色，仅仅取第一个
-//            $status = collect(data_get($list,'role_reviews'))->map(function ($item/*,$key*/){
-//               return $item->status;
-//            })->first();
-            $process_status = 'process'.$this->_process_location($request->get('role_id'))."_status";
+                $q->where('master_business_id',$request->input('master_business_id'));
+            });
+        });
+        //</editor-fold>
+        //<editor-fold desc="子业务板块">
+        $contract = $contract->when($request->has('slaver_business_id') && $request->input('slaver_business_id'),function ($q)use($request){
+            /** @type \Illuminate\Database\Eloquent\Builder $q */
+            $q->whereHas('contract_data',function ($q)use($request){
+                /** @type \Illuminate\Database\Eloquent\Builder $q */
+                $q->where('slaver_business_id',$request->input('slaver_business_id'));
+            });
+        });
+        //</editor-fold>
+
+        //<editor-fold desc="合同状态，有效无效">
+        $contract = $contract->when($request->has('is_valid')&&$request->input('is_valid'),function($q)use($request){
+            /** @type \Illuminate\Database\Eloquent\Builder $q */
+            if($request->is_valid){
+                $q->where('begin_time',"<=",date("Y-m-d"))
+                    ->where('end_time',">=",date("Y-m-d"));
+            }else{
+                $q->where('begin_time',">",date("Y-m-d"))
+                    ->where('end_time',"<",date("Y-m-d"));
+            }
+
+        });
+        //</editor-fold>
+        //<editor-fold desc="审批五个过程的人和时间的搜索">
+        foreach([0,1,2,3,4] as $key => $value){
+            $contract = $contract->when($request->has("process{$value}_user_id")&& $request->input("process{$value}_user_id"),function ($q)use($request,$value){
+                /** @type \Illuminate\Database\Eloquent\Builder $q */
+                $q->where("process{$value}_user_id",$request->input("process{$value}_user_id"));
+            })->when($request->has("process{$value}_begin_time") && $request->input("process{$value}_begin_time"),function ($q)use($request,$value){
+                /** @type \Illuminate\Database\Eloquent\Builder $q */
+                $q->where("process{$value}_time",'>=',$request->input("process{$value}_begin_time"));
+            })->when($request->has("process{$value}_end_time"),function ($q)use($request,$value){
+                //申请结束时间
+                /** @type \Illuminate\Database\Eloquent\Builder $q */
+                $q->where("process{$value}_time",'<=',$request->input("process{$value}_end_time"));
+            });
+        }
+        //</editor-fold>
+         $list = $contract->orderBy("contracts.updated_at","desc")->paginate($request->get('per_page',10));
+        $collection = $list->setCollection($list->getCollection()->map(function ($list,$key)use($request){
+            /** @var ClearCompany $list */
             $data = [
-                'id'=>$list->id,
-                'result'=>intval(data_get($list,$process_status)),//data_get($list,'role_reviews'),
-                'status'=>data_get($list,$process_status) ? 1 : 0,
-                'sn'=>data_get($list,'sn'),
-                'inner_sn'=>data_get($list,'inner_sn'),
-                'part_a_customer_suppliers'=>data_get($list,'part_a_customer_suppliers.name'),
-                'part_b_customer_suppliers'=>data_get($list,'part_b_customer_suppliers.name'),
-                'part_c_customer_suppliers'=>data_get($list,'part_c_customer_suppliers.name'),
-                'segment_businesses'=>collect($list->contract_data)->map(function($item){
-                    return $item->segment_businesses->name;
-                })->join(","),//($list,'contract_data.segment_businesses'),
-                'master_businesses'=>collect($list->contract_data)->map(function($item){
-                    return $item->master_businesses->name;
+//                "no"=>$key+1,
+                'id'=>data_get($list,'id'),
+                'process'=>call_user_func(function()use($list,$request){
+                    $process = array_values(Config::get('constants.REVIEW'))[0];
+                    foreach([4,3,2,1,0] as $k => $v){
+                        if(data_get($list,"process{$v}_status")){
+                            $process = array_values(Config::get('constants.REVIEW'))[$v];
+                            break;
+                        }
+                    }
+                    return $process;
+                }),
+                'status'=>call_user_func(function ()use($list,$request){
+                    $str = "process" . $this->_process_location($request->get('role_id')) . "_status";
+                    $data_get = data_get($list, $str);
+                    return $data_get > 0 ? "已处理" : "未处理" ;
+                }),
+                'result'=>call_user_func(function()use($list,$request){
+                    $str = "process" . $this->_process_location($request->get('role_id')) . "_status";
+                    $data_get = data_get($list, $str);
+                    if($data_get == 1){
+                        return '同意';
+                    }elseif($data_get == 0){
+                        return "-";
+                    }elseif($data_get == -1){
+                        return "退签";
+                    }else{
+                        throw new \Exception("审批状态异常");
+                    }
+                    return $data_get == 1 ? "同意" : "未处理" ;
+                }),
+                'type'=>data_get($list,'type') == 'customer' ? "客户合同" : "供应商合同",
+                'sn' =>data_get($list,'sn'),
+                'sn_inner'=>data_get($list,'sn_inner'),
+                'clear_company_name'=>data_get($list,'clear_companies.name'),
+                'customer'=>data_get($list,'type') == 'customer' ? collect(data_get($list,'contract_customer_suppliers'))->map(function($item,$key){
+                    /** @var CustomerSupplier $item */
+                    return $item->name;
+                })->join(",") : "",
+                'supplier'=>data_get($list,'type') == 'supplier' ? collect(data_get($list,'contract_customer_suppliers'))->map(function($item,$key){
+                    /** @var CustomerSupplier $item */
+                    return $item->name;
+                })->join(",") : "",
+                "segment_business"=>collect(data_get($list,'contract_data'))->map(function ($item,$key){
+                    return data_get($item,"segment_businesses.name");
                 })->join(","),
-                'slaver_businesses'=>collect($list->contract_data)->map(function($item){
-                    return $item->slaver_businesses->name;
+                "master_business"=>collect(data_get($list,'contract_data'))->map(function ($item,$key){
+                    return data_get($item,"master_businesses.name");
                 })->join(","),
+                "slaver_business"=>collect(data_get($list,'contract_data'))->map(function ($item,$key){
+                    return data_get($item,"slaver_businesses.name");
+                })->join(","),
+                "charge_rule_name"=>collect(data_get($list,'contract_data'))->map(function ($item,$key){
+                    return data_get($item,"charge_rule_id");
+                })->join(","),
+                "begin_time"=>data_get($list,"begin_time"),
+                "end_time"=>data_get($list,"end_time"),
+                "is_valid"=>call_user_func(function ()use($list){
+                    if(data_get($list,"end_time") < date("Y-m-d H:i:s")){
+                        return "过期";
+                    }else{
+                        return "有效";
+                    }
+                }),
+                "process0_user_name"=>data_get($list,'process0_user.name'),
+                "process0_time"=>data_get($list,'process0_time'),
+                "process1_user_name"=>data_get($list,'process1_user.name'),
+                "process1_time"=>data_get($list,'process1_time'),
+                "process2_user_name"=>data_get($list,'process2_user.name'),
+                "process2_time"=>data_get($list,'process2_time'),
+                "process3_user_name"=>data_get($list,'process3_user.name'),
+                "process3_time"=>data_get($list,'process3_time'),
+                "process4_user_name"=>data_get($list,'process4_user.name'),
+                "process4_time"=>data_get($list,'process4_time'),
+                'created_at'=>(string)data_get($list,'created_at',null),
+                'updated_at'=>(string)data_get($list,'updated_at',null),
             ];
             return $data;
         }));
-
-        return $collection;
-//        $anonymousResourceCollection = \App\Http\Resources\Business::collection($business);
-//        return $contract;
-//        return $anonymousResourceCollection;
+         return $collection;
     }
 
     /**
@@ -771,95 +790,7 @@ class ContractController extends Controller
     public function update_1(Request $request, Contract $contract)
     {
         return $this->store_1($request,$contract);
-//        return [];
     }
-
-    /**
-     * 更新02204
-     *
-     * @queryParam id required 合同id
-     * @queryParam sn 合同编号
-     * @queryParam customer_sn 对方合同编号
-     * @queryParam name 合同名称
-     * @queryParam type 合同类型customer：客户合同，supplier：供应商合同
-     * @queryParam clear_companies_id 结算公司id
-     * @queryParam part_a_customer_supplier_id 合同甲方
-     * @queryParam part_b_customer_supplier_id 合同乙方
-     * @queryParam part_c_customer_supplier_id 合同丙方
-     * @queryParam from 揽货性质，company:公司揽货、person:销售揽货
-     * @queryParam is_invoice 是否结算客户0:否，1:是
-     * @bodyParam attachment string 合同附件
-     * @queryParam segment_business_id 业务板块id，多个用数组方式
-     * @queryParam master_business_id 主业务类型id，多个用数组方式
-     * @queryParam slaver_business_id 子业务类型id，多个用数组方式
-     * @queryParam $charge_rule_id 价格协议号id，多个用数组方式
-     * @param Request $request
-     * @param Contract $contract
-     * @return array
-     */
-    public function update(Request $request, Contract $contract)
-    {
-        /** @noinspection PhpUndefinedClassInspection */
-        DB::transaction(function () use($request,$contract){
-            $request->has('sn') && $request->input('sn') && $contract->sn = $request->input('sn');
-            $request->has('customer_sn') && $request->input('customer_sn') && $contract->customer_sn = $request->input('customer_sn');
-            $request->has('name') && $request->input('name') && $contract->name = $request->input('name');
-            $request->has('type') && $request->input('type') && $contract->type = $request->input('type');
-            $request->has('clear_company_id') && $request->input('clear_company_id') && $contract->clear_company_id = $request->input('clear_company_id');
-            $request->has('part_a_customer_supplier_id') && $request->input('part_a_customer_supplier_id') && $contract->part_a_customer_supplier_id = $request->input('part_a_customer_supplier_id');
-            $request->has('part_b_customer_supplier_id') && $request->input('part_b_customer_supplier_id') && $contract->part_b_customer_supplier_id = $request->input('part_b_customer_supplier_id');
-            $request->has('part_c_customer_supplier_id') && $request->input('part_c_customer_supplier_id') && $contract->part_c_customer_supplier_id = $request->input('part_c_customer_supplier_id');
-            $request->has('from') && $request->input('from') && $contract->from = $request->input('from');
-            $request->has('is_invoice') && $request->input('is_invoice') && $contract->is_invoice = $request->input('is_invoice');
-
-            if($request->has('attachment')){
-                $fileCharater = $request->file('attachment');
-                if ($fileCharater->isValid()) {
-                    //获取文件的扩展名
-                    $ext = $fileCharater->getClientOriginalExtension();
-                    //获取文件的绝对路径
-                    $path = $fileCharater->getRealPath();
-                    //定义文件名
-                    $filename = date('Y-m-d-h-i-s').'-'.rand(1000,9999).'.'.$ext;
-                    //存储文件。disk里面的public。总的来说，就是调用disk模块里的public配置
-                    /** @noinspection PhpUndefinedClassInspection */
-                    Storage::disk('public')->put($filename, file_get_contents($path));
-                    $contract->attachment = $filename;
-                }
-            }
-
-            $contract->save();
-
-            ContractData::query()->where("contracts_id",$contract->id)->delete();
-            collect($request->input('segment_businesses_id'))->map(function($item,$key)use($request,$contract){
-                $contractData = new ContractData();
-                $contractData->contract_id = $contract->id;
-                $contractData->segment_business_id = $item;
-                $contractData->master_business_id  = $request->input('master_business_id')[$key];
-                $contractData->slaver_business_id  = $request->input('slaver_business_id')[$key];
-                $contractData->charge_rule_id  = $request->input('charge_rule_id')[$key];
-                $contractData->save();
-            });
-        });
-
-        return [];
-    }
-
-//    public function upload(Request $request){
-//        $fileCharater = $request->file('source');
-//        //获取文件的扩展名
-//        $ext = $fileCharater->getClientOriginalExtension();
-//
-//        //获取文件的绝对路径
-//        $path = $fileCharater->getRealPath();
-//
-//        //定义文件名
-//        $filename = date('Y-m-d-h-i-s').'-'.rand(1000,9999).'.'.$ext;
-//
-//        //存储文件。disk里面的public。总的来说，就是调用disk模块里的public配置
-//        \Storage::disk('public')->put($filename, file_get_contents($path));
-//        return $request->input('name');
-//    }
 
     /**
      * 删除02205
@@ -910,19 +841,19 @@ class ContractController extends Controller
         }
         //</editor-fold>
         //<editor-fold desc="审批通过">
-        if($process_location === 0 && $contract->process0_status === 0){
+        if($process_location === 0 && ($contract->process0_status === 0 || $contract->process0_status === -1) ){
             $contract->process0_status = $request->input('status');
             $contract->process0_time   = date("Y-m-d H:i:s");
             $contract->process0_user_id= $request->get('user_id');
-        }elseif ($process_location === 1 && $contract->process0_status === 1 && $contract->process1_status === 0){
+        }elseif ($process_location === 1 && $contract->process0_status === 1 && ($contract->process1_status === 0 || $contract->process1_status === -1)){
             $contract->process1_status  = $request->input('status');
             $contract->process1_time    = date("Y-m-d H:i:s");
             $contract->process1_user_id = $request->get('user_id');
-        }elseif($process_location === 2 && $contract->process1_status === 1 && $contract->process2_status === 0){
+        }elseif($process_location === 2 && $contract->process1_status === 1 && ($contract->process2_status === 0 || $contract->process2_status === -1)){
             $contract->process2_status  = $request->input('status');
             $contract->process2_user_id = $request->get('user_id');
             $contract->process2_time    = date("Y-m-d H:i:s");
-        }elseif($process_location === 3 && $contract->process2_status === 1 && $contract->process3_status === 0){
+        }elseif($process_location === 3 && $contract->process2_status === 1 && ($contract->process3_status === 0 || $contract->process3_status === -1)){
             $contract->process3_status  = $request->input('status');
             $contract->process3_user_id = $request->get('user_id');
             $contract->process3_time    = date('Y-m-d H:i:s');
@@ -952,6 +883,14 @@ class ContractController extends Controller
             $contract->process4_status  = 0;
             $contract->process4_user_id = null;
             $contract->process4_time    = null;
+
+            if($process_location === 0){
+
+            }elseif ($process_location === 1){
+                $contract->process1_status == -1;
+//                $contract->
+            }
+
             $contract->save();
             return [];
         }
@@ -960,24 +899,6 @@ class ContractController extends Controller
         $this->_review($request,$contract,$process_location);
         //</editor-fold>
         return [];
-    }
-
-    private function _preview(Request $request,Contract $contract){
-        /** @noinspection PhpUndefinedClassInspection */
-        $data = ReviewLog::query()->updateOrInsert(
-            [
-                'model'=>'contracts',
-                'foreign_key'=>$contract->id,
-                'role_id'=>$request->get('role_id'),
-                'status'=>0
-            ],
-            [
-                'user_id'=>$request->get('user_id'),
-                'name'=>Config::get('constants.REVIEW')[$request->get('role_id')],
-                'suggestion'=>$request->input('suggestion'),
-                'status'=>1,
-            ]);
-        return $data;
     }
 
     //角色所处流程位置
@@ -990,87 +911,6 @@ class ContractController extends Controller
         //登录角色所处的审批流程位置
         $process_location = array_search($role_id,$role_ids);
         return $process_location;
-    }
-
-    /**
-     * 提交审核02207
-     * 只有发起者有这个动作
-     * @queryParam contract required 合同id
-     * @response {
-     * }
-     * @param Request $request
-     * @param Contract $contract
-     * @return array
-     * @throws \Exception
-     */
-    function preview(Request $request,Contract $contract){
-        $role_id = $request->get('role_id');
-        $user_id = $request->get('user_id');
-
-        #当前角色，是否可提交审批
-        /** @noinspection PhpUndefinedClassInspection */
-        $role_ids = array_keys(Config::get('constants.REVIEW'));
-        //登录角色所处的审批流程位置
-        $process_location = array_search($role_id,$role_ids);
-
-        if($process_location > 0){
-            throw new \Exception("只有销售部业务员才能发起提交审核");
-        }
-
-        //<editor-fold desc="登录角色提交当前审批">
-        //当前位置状态
-//        $current_process_status_field = 'process'.$process_location.'_status';
-        $can = [0,-1];
-        if($process_location === 0){
-            if(in_array($contract->process0_status, $can) ){
-                $contract->process0_status = 1;
-                $contract->process0_time   = date('Y-m-d H:i:s');
-                $contract->process0_user_id= $user_id;
-//                return [];
-            }else{
-                throw new \Exception("做为申请人的您，不可提交审批");
-            }
-//        }elseif ($process_location === 1 ){
-//            if($contract->process0_status === "1" && $contract->process1_status == 0){
-//                $contract->process1_status = 1;
-//                $contract->process1_time   = date('Y-m-d H:i:s');
-//                $contract->process1_user_id= $user_id;
-//            }else{
-//                throw new \Exception("作为商务会签人的您，不可提交审批");
-//            }
-//        }elseif ($process_location === 2 ){
-//            if($contract->process1_status === "1" && $contract->process2_status == 0){
-//                $contract->process2_status = 1;
-//                $contract->process2_time   = date('Y-m-d H:i:s');
-//                $contract->process2_user_id= $user_id;
-//            }else{
-//                throw new \Exception("作为业务会签人的您，不可提交审批");
-//            }
-//        }elseif ($process_location === 3 ){
-//            if($contract->process2_status === "1" && $contract->process3_status == 0){
-//                $contract->process3_status = 1;
-//                $contract->process3_time   = date('Y-m-d H:i:s');
-//                $contract->process3_user_id= $user_id;
-//            }else{
-//                throw new \Exception("作为审批人的您，已经提交审批，不可重复提交");
-//            }
-//        }elseif ($process_location === 4 ){
-//            if($contract->process3_status === "1" && $contract->process4_status == 0){
-//                $contract->process4_status = 1;
-//                $contract->process4_time   = date('Y-m-d H:i:s');
-//                $contract->process4_user_id= $user_id;
-//            }else{
-//                throw new \Exception("作为审批人的您，已经提交审批，不可重复提交");
-//            }
-//        }else{
-//            throw new \Exception("合同提交审核错误");
-        }
-        $contract->save();
-
-        $this->_preview($request,$contract);
-
-        return [];
-        //</editor-fold>
     }
 
     private function _review(Request $request,Contract $contract,$process_location){
@@ -1094,143 +934,6 @@ class ContractController extends Controller
                 'updated_at'=>date("Y-m-d H:i:s"),
             ]);
         return $data;
-    }
-
-    /**
-     * 审核02208
-     *
-     * @queryParam contract required 合同id
-     * @queryParam status required 审核 -1-审核不通过、1-审核通过
-     * @queryParam inner_sn string 内部管理合同该编号(只有最后一步归档才需要)
-     * @queryParam suggestion 建议
-     * @response {
-     * }
-     * @param Request $request
-     * @param Contract $contract
-     * @return array
-     * @throws \Exception
-     */
-    function review(Request $request,Contract $contract){
-        $process_location = $this->_process_location($request->get('role_id'));
-
-        if($process_location === 0){
-            throw new \Exception("你没有审批权限");
-        }elseif ($process_location === 1){
-            if ($contract->process0_status === "1"){
-                $contract->process1_status = $request->input('status');
-                $contract->process1_time    = \date("Y-m-d H:i:s");
-                $contract->process1_user_id = $request->get('user_id');
-            }else{
-                throw new \Exception("作为商务会签人的您，无法有效审核");
-            }
-        }elseif($process_location === 2){
-            if ($contract->process1_status === "1"){
-                $contract->process2_status = $request->input('status');
-                $contract->process2_user_id = $request->get('user_id');
-                $contract->process2_time    = \date("Y-m-d H:i:s");
-            }else{
-                throw new \Exception("作为业务会签人的您，无法有效审核");
-            }
-        }elseif($process_location === 3){
-            if ($contract->process2_status === "1"){
-                $contract->process3_status  = $request->input('status');
-                $contract->process3_user_id = $request->get('user_id');
-                $contract->process3_time    = \date("Y-m-d H:i:s");
-            }else{
-                throw new \Exception("作为总经理会签人的您，无法有效审核");
-            }
-        }
-//        elseif($process_location === 4){
-//            if ($contract->process3_status === "1"){
-//                $contract->process4_status  = $request->input('status');
-//                $contract->process4_user_id = $request->get('user_id');
-//                $contract->process4_time    = \date("Y-m-d H:i:s");
-//                $contract->inner_sn         = $request->input('inner_sn');
-//            }else{
-//                throw new \Exception("作为归档人的您，无法有效审核");
-//            }
-//        }
-        else{
-            throw new \Exception("合同审核错误");
-        }
-
-        if($request->input('status') == -1){
-            $contract->process0_status  = -1;
-            $contract->process0_time    = null;
-            $contract->process1_status  = 0;
-            $contract->process1_user_id = null;
-            $contract->process1_time    = null;
-            $contract->process2_status  = 0;
-            $contract->process2_user_id = null;
-            $contract->process2_time    = null;
-            $contract->process3_status  = 0;
-            $contract->process3_user_id = null;
-            $contract->process3_time    = null;
-            $contract->process4_status  = 0;
-            $contract->process4_user_id = null;
-            $contract->process4_time    = null;
-        }
-
-        $contract->save();
-
-        $this->_review($request,$contract,$process_location);
-
-        return [];
-    }
-
-    /**
-     * 归档02209
-     * @queryParam contract required int 合同id
-     * @queryParam inner_sn required string 内部管理合同该编号
-     * @response {
-     * }
-     * @param Request $request
-     * @param Contract $contract
-     * @return array
-     * @throws \Exception
-     */
-    function filing(Request $request,Contract $contract){
-        /** @noinspection PhpUndefinedClassInspection */
-        DB::transaction(function()use($request,$contract){
-            $process_location = $this->_process_location($request->get('role_id'));
-            /** @noinspection PhpUndefinedClassInspection */
-            #去除审批流程最后一个角色role_id
-            $array = array_keys(Config::get('constants.REVIEW'));
-            $last_role_id= array_pop($array);
-            if($last_role_id != $request->get('role_id')){
-                throw new \Exception('您没有归档权限');
-            }
-
-            if($contract->process3_status != 1){
-                throw new \Exception('请做完审批流程，方可归档');
-            }
-            $contract->process4_status = 1;
-            $contract->process4_time = \date('Y-m-d H:i:s');
-            $contract->process4_user_id = $request->get('user_id');
-            $contract->inner_sn = $request->input('inner_sn');
-            $contract->save();
-
-            /** @noinspection PhpUndefinedClassInspection */
-            $role_ids = array_keys(Config::get('constants.REVIEW'));
-            $role_id = $role_ids[$process_location];
-            /** @noinspection PhpUndefinedClassInspection */
-            ReviewLog::query()->updateOrInsert(
-                [
-                    'model'=>'contracts',
-                    'foreign_key'=>$contract->id,
-                    'role_id'=>$role_id,
-                    'status'=>0
-                ],
-                [
-                    'user_id'=>$request->get('user_id'),
-                    'name'=>Config::get('constants.REVIEW')[$request->get('role_id')],
-                    'status'=>1,
-                    'suggestion'=>$request->input('suggestion',''),
-                ]);
-        });
-
-
-        return [];
     }
 
     /**
@@ -1280,5 +983,11 @@ class ContractController extends Controller
             return $data;
         });
         return $r;
+    }
+
+    function search(Request $request){
+        if($request->input('type') == 'customer'){
+            
+        }
     }
 }
